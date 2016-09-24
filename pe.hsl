@@ -1,0 +1,1093 @@
+/*****************************************************************************
+ * pe.hsl - Hex Workshop editor's structure definition file for the
+ *          Microsoft's PE/COFF file formats.
+ *
+ * Author: Antoine87 <antoine.madry@outlook.fr>
+ * Source: https://github.com/Antoine87/pe.hsl
+ *
+ *****************************************************************************
+ * This is free and unencumbered software released into the public domain.
+ *
+ * Anyone is free to copy, modify, publish, use, compile, sell, or
+ * distribute this software, either in source code form or as a compiled
+ * binary, for any purpose, commercial or non-commercial, and by any
+ * means.
+ *
+ * In jurisdictions that recognize copyright laws, the author or authors
+ * of this software dedicate any and all copyright interest in the
+ * software to the public domain. We make this dedication for the benefit
+ * of the public at large and to the detriment of our heirs and
+ * successors. We intend this dedication to be an overt act of
+ * relinquishment in perpetuity of all present and future rights to this
+ * software under copyright law.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * For more information, please refer to <http://unlicense.org/>
+ *
+ *****************************************************************************
+ * Caveats:
+ *
+ * - The AutoParseFile function supports PE executable and COFF object files
+ *   for x86 and AMD64 architectures only.
+ *
+ * - Ensure that this file's line breaks are all CRLF otherwise the editor
+ *   will fail loading it.
+ *
+ *****************************************************************************
+ * Initial resources:
+ *
+ * - WinNT.h from Visual Studio 2015 (v10.0.10586.0)
+ * - Microsoft PE/COFF Specification revision 8.3 - February 6, 2013
+ *
+ *****************************************************************************
+ * Revision History:
+ *
+ * 11 Jun 2016 - Antoine - v1.0 Bug fixes + added license (GNU GPL)
+ * 08 Jun 2016 - Antoine - v0.8 Added COFF object files parsing (AutoParseFile)
+ * 07 Jun 2016 - Antoine - v0.7 Added export table parsing (AutoParseFile)
+ * 05 Jun 2016 - Antoine - v0.6 Added import table parsing (AutoParseFile)
+ * 03 Jun 2016 - Antoine - v0.5 Added sections parsing (AutoParseFile)
+ * 01 Jun 2016 - Antoine - v0.4 Added data directories parsing (AutoParseFile)
+ * 31 May 2016 - Antoine - v0.3 AutoParseFile function added (PE and COFF)
+ * 28 May 2016 - Antoine - v0.2 Added support for COFF object files
+ * 28 May 2016 - Antoine - v0.1 Created (support for PE executables)
+ */
+
+#include "standard-types.hsl"
+
+#pragma displayname("Microsoft PE/COFF (*.exe *.dll *.obj...)") ;
+#pragma fileextensions(".exe;.dll;.obj;.sys;.lib;.mui") ;
+
+#pragma byteorder(little_endian)
+
+typedef UQWord ULONGLONG; // current bug in Hex Workshop v6.8 :
+                          // unsigned __int64 is treated as int64
+                          // UQWord seems to work (treated as uint64)
+
+
+
+
+/****************************************************************************
+ *                    WinNT.h macro-definitions adaption                    *
+ ****************************************************************************/
+
+#pragma enumsign("unsigned")
+
+
+#pragma enumsize(2)
+typedef enum __DOS_MAGICS // WORD e_magic;
+{
+  IMAGE_DOS_SIGNATURE     = 0x5A4D,     // MZ
+  IMAGE_OS2_SIGNATURE     = 0x454E,     // NE
+  IMAGE_OS2_SIGNATURE_LE  = 0x454C,     // LE
+  IMAGE_VXD_SIGNATURE     = 0x454C      // LE
+} _DOSMAG;
+
+
+#pragma enumsize(4)
+typedef enum __PE_SIGNATURE // DWORD Signature;
+{
+  IMAGE_NT_SIGNATURE      = 0x00004550  // PE00
+} _PESIGN;
+
+
+enum __IMAGE_SIZEOF_FILE_HEADER
+{
+  IMAGE_SIZEOF_FILE_HEADER  = 20
+};
+
+
+typedef struct __CHARACTERISTICS // WORD Characteristics;
+{
+  WORD  _Relocs_stripped          : 1;
+  WORD  _Executable_image         : 1;
+  WORD  _Line_nums_stripped       : 1;
+  WORD  _Local_syms_stripped      : 1;
+  WORD  _Aggresive_ws_trim        : 1;
+  WORD  _Large_address_aware      : 1;
+  WORD  __reserved                : 1;
+  WORD  _Bytes_reversed_lo        : 1;
+  WORD  _32bit_machine            : 1;
+  WORD  _Debug_stripped           : 1;
+  WORD  _Removable_run_from_swap  : 1;
+  WORD  _Net_run_from_swap        : 1;
+  WORD  _System                   : 1;
+  WORD  _Dll                      : 1;
+  WORD  _Up_system_only           : 1;
+  WORD  _Bytes_reversed_hi        : 1;
+} _CHARAC;
+
+
+#pragma enumsize(2)
+typedef enum __MACHINE_TYPES // WORD Machine;
+{
+  IMAGE_FILE_MACHINE_UNKNOWN    = 0,
+  IMAGE_FILE_MACHINE_I386       = 0x014c,
+  IMAGE_FILE_MACHINE_R3000      = 0x0162,
+  IMAGE_FILE_MACHINE_R4000      = 0x0166,
+  IMAGE_FILE_MACHINE_R10000     = 0x0168,
+  IMAGE_FILE_MACHINE_WCEMIPSV2  = 0x0169,
+  IMAGE_FILE_MACHINE_ALPHA      = 0x0184,
+  IMAGE_FILE_MACHINE_SH3        = 0x01a2,
+  IMAGE_FILE_MACHINE_SH3DSP     = 0x01a3,
+  IMAGE_FILE_MACHINE_SH3E       = 0x01a4,
+  IMAGE_FILE_MACHINE_SH4        = 0x01a6,
+  IMAGE_FILE_MACHINE_SH5        = 0x01a8,
+  IMAGE_FILE_MACHINE_ARM        = 0x01c0,
+  IMAGE_FILE_MACHINE_THUMB      = 0x01c2,
+  IMAGE_FILE_MACHINE_ARMNT      = 0x01c4,
+  IMAGE_FILE_MACHINE_AM33       = 0x01d3,
+  IMAGE_FILE_MACHINE_POWERPC    = 0x01F0,
+  IMAGE_FILE_MACHINE_POWERPCFP  = 0x01f1,
+  IMAGE_FILE_MACHINE_IA64       = 0x0200,
+  IMAGE_FILE_MACHINE_MIPS16     = 0x0266,
+  IMAGE_FILE_MACHINE_ALPHA64    = 0x0284,
+  IMAGE_FILE_MACHINE_MIPSFPU    = 0x0366,
+  IMAGE_FILE_MACHINE_MIPSFPU16  = 0x0466,
+  IMAGE_FILE_MACHINE_AXP64      = 0x0284, // IMAGE_FILE_MACHINE_ALPHA64
+  IMAGE_FILE_MACHINE_TRICORE    = 0x0520,
+  IMAGE_FILE_MACHINE_CEF        = 0x0CEF,
+  IMAGE_FILE_MACHINE_EBC        = 0x0EBC,
+  IMAGE_FILE_MACHINE_AMD64      = 0x8664,
+  IMAGE_FILE_MACHINE_M32R       = 0x9041,
+  IMAGE_FILE_MACHINE_ARM64      = 0xAA64,
+  IMAGE_FILE_MACHINE_CEE        = 0xC0EE
+} _MACHINE;
+
+
+enum __IMAGE_NUMBEROF_DIRECTORY_ENTRIES
+{
+  IMAGE_NUMBEROF_DIRECTORY_ENTRIES  = 16
+};
+
+
+#pragma enumsize(2)
+typedef enum __OPTIONAL_HEADER_MAGICS // WORD Magic;
+{
+  IMAGE_NT_OPTIONAL_HDR32_MAGIC = 0x10b,
+  IMAGE_NT_OPTIONAL_HDR64_MAGIC = 0x20b,
+  IMAGE_ROM_OPTIONAL_HDR_MAGIC  = 0x107
+} _OPTMAG;
+
+
+#pragma enumsize(2)
+typedef enum __SUBSYSTEM_VALUES // WORD Subsystem;
+{
+  IMAGE_SUBSYSTEM_UNKNOWN                   = 0,
+  IMAGE_SUBSYSTEM_NATIVE                    = 1,
+  IMAGE_SUBSYSTEM_WINDOWS_GUI               = 2,
+  IMAGE_SUBSYSTEM_WINDOWS_CUI               = 3,
+  IMAGE_SUBSYSTEM_OS2_CUI                   = 5,
+  IMAGE_SUBSYSTEM_POSIX_CUI                 = 7,
+  IMAGE_SUBSYSTEM_NATIVE_WINDOWS            = 8,
+  IMAGE_SUBSYSTEM_WINDOWS_CE_GUI            = 9,
+  IMAGE_SUBSYSTEM_EFI_APPLICATION           = 10,
+  IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER   = 11,
+  IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER        = 12,
+  IMAGE_SUBSYSTEM_EFI_ROM                   = 13,
+  IMAGE_SUBSYSTEM_XBOX                      = 14,
+  IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION  = 16,
+  IMAGE_SUBSYSTEM_XBOX_CODE_CATALOG         = 17
+} _SUBSYS;
+
+
+typedef struct __DLL_CHARACTERISTICS // WORD DllCharacteristics;
+{
+  WORD  IMAGE_LIBRARY_PROCESS_INIT                      : 1;
+  WORD  IMAGE_LIBRARY_PROCESS_TERM                      : 1;
+  WORD  IMAGE_LIBRARY_THREAD_INIT                       : 1;
+  WORD  IMAGE_LIBRARY_THREAD_TERM                       : 1;
+  WORD  reversed                                        : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA        : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE           : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY        : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_NX_COMPAT              : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_NO_ISOLATION           : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_NO_SEH                 : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_NO_BIND                : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_APPCONTAINER           : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_WDM_DRIVER             : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_GUARD_CF               : 1;
+  WORD  IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE  : 1;
+} _DLLCHA;
+
+
+enum __IMAGE_SIZEOF_SHORT_NAME
+{
+  IMAGE_SIZEOF_SHORT_NAME = 8
+};
+
+
+enum __IMAGE_SIZEOF_SECTION_HEADER
+{
+  IMAGE_SIZEOF_SECTION_HEADER = 40
+};
+
+
+typedef struct __SECTION_CHARACTERISTICS // DWORD Characteristics;
+{
+//      IMAGE_SCN_TYPE_REG                      // 0x00000000
+  DWORD IMAGE_SCN_TYPE_DSECT              : 1;  // 0x00000001
+  DWORD IMAGE_SCN_TYPE_NOLOAD             : 1;  // 0x00000002
+  DWORD IMAGE_SCN_TYPE_GROUP              : 1;  // 0x00000004
+  DWORD IMAGE_SCN_TYPE_NO_PAD             : 1;  // 0x00000008
+  DWORD IMAGE_SCN_TYPE_COPY               : 1;  // 0x00000010
+
+  DWORD IMAGE_SCN_CNT_CODE                : 1;  // 0x00000020
+  DWORD IMAGE_SCN_CNT_INITIALIZED_DATA    : 1;  // 0x00000040
+  DWORD IMAGE_SCN_CNT_UNINITIALIZED_DATA  : 1;  // 0x00000080
+
+  DWORD IMAGE_SCN_LNK_OTHER               : 1;  // 0x00000100
+  DWORD IMAGE_SCN_LNK_INFO                : 1;  // 0x00000200
+  DWORD IMAGE_SCN_TYPE_OVER               : 1;  // 0x00000400
+  DWORD IMAGE_SCN_LNK_REMOVE              : 1;  // 0x00000800
+  DWORD IMAGE_SCN_LNK_COMDAT              : 1;  // 0x00001000
+  DWORD reserved1                         : 1;  // 0x00002000
+  DWORD IMAGE_SCN_NO_DEFER_SPEC_EXC       : 1;  // 0x00004000
+  DWORD IMAGE_SCN_GPREL                   : 1;  // 0x00008000
+  DWORD IMAGE_SCN_MEM_SYSHEAP             : 1;  // 0x00010000
+  DWORD IMAGE_SCN_MEM_16BIT               : 1;  // 0x00020000
+  DWORD IMAGE_SCN_MEM_LOCKED              : 1;  // 0x00040000
+  DWORD IMAGE_SCN_MEM_PRELOAD             : 1;  // 0x00080000
+
+  DWORD IMAGE_SCN_ALIGN_                  : 4;  // 0x0X000000
+/*      IMAGE_SCN_ALIGN_1BYTES            = 0x1 (1)
+        IMAGE_SCN_ALIGN_2BYTES            = 0x2 (2)
+        IMAGE_SCN_ALIGN_4BYTES            = 0x3 (3)
+        IMAGE_SCN_ALIGN_8BYTES            = 0x4 (4)
+        IMAGE_SCN_ALIGN_16BYTES           = 0x5 (5)
+        IMAGE_SCN_ALIGN_32BYTES           = 0x6 (6)
+        IMAGE_SCN_ALIGN_64BYTES           = 0x7 (7)
+        IMAGE_SCN_ALIGN_128BYTES          = 0x8 (8)
+        IMAGE_SCN_ALIGN_256BYTES          = 0x9 (9)
+        IMAGE_SCN_ALIGN_512BYTES          = 0xA (10)
+        IMAGE_SCN_ALIGN_1024BYTES         = 0xB (11)
+        IMAGE_SCN_ALIGN_2048BYTES         = 0xC (12)
+        IMAGE_SCN_ALIGN_4096BYTES         = 0xD (13)
+        IMAGE_SCN_ALIGN_8192BYTES         = 0xE (14)
+// Unused
+        IMAGE_SCN_ALIGN_MASK              = 0xF
+*/
+  DWORD IMAGE_SCN_LNK_NRELOC_OVFL         : 1;  // 0x01000000
+  DWORD IMAGE_SCN_MEM_DISCARDABLE         : 1;  // 0x02000000
+  DWORD IMAGE_SCN_MEM_NOT_CACHED          : 1;  // 0x04000000
+  DWORD IMAGE_SCN_MEM_NOT_PAGED           : 1;  // 0x08000000
+  DWORD IMAGE_SCN_MEM_SHARED              : 1;  // 0x10000000
+  DWORD IMAGE_SCN_MEM_EXECUTE             : 1;  // 0x20000000
+  DWORD IMAGE_SCN_MEM_READ                : 1;  // 0x40000000
+  DWORD IMAGE_SCN_MEM_WRITE               : 1;  // 0x80000000
+} _SCNCHA;
+
+
+enum __IMAGE_SIZEOF_SYMBOL
+{
+  IMAGE_SIZEOF_SYMBOL = 18
+};
+
+
+#pragma enumsize(2)
+typedef enum __SYMBOL_SECTION_NUMBER_SPECIAL_VALUES // SHORT SectionNumber;
+{
+  IMAGE_SYM_UNDEFINED   = 0,      // Symbol is undefined or is common.
+  IMAGE_SYM_ABSOLUTE    = 0xFFFF, // (-1) Symbol is an absolute value.
+  IMAGE_SYM_DEBUG       = 0xFFFE, // (-2) Symbol is a special debug item.
+  IMAGE_SYM_SECTION_MAX = 0xFEFF  // Values 0xFF00-0xFFFF are special
+} _SYMSCN;
+
+
+#pragma enumsize(2)
+typedef enum __SYMBOL_TYPES // WORD Type;
+{
+  IMAGE_SYM_TYPE_NULL               = 0x0000, // no type.
+  IMAGE_SYM_TYPE_VOID               = 0x0001, //
+  IMAGE_SYM_TYPE_CHAR               = 0x0002, // type character.
+  IMAGE_SYM_TYPE_SHORT              = 0x0003, // type short integer.
+  IMAGE_SYM_TYPE_INT                = 0x0004, //
+  IMAGE_SYM_TYPE_LONG               = 0x0005, //
+  IMAGE_SYM_TYPE_FLOAT              = 0x0006, //
+  IMAGE_SYM_TYPE_DOUBLE             = 0x0007, //
+  IMAGE_SYM_TYPE_STRUCT             = 0x0008, //
+  IMAGE_SYM_TYPE_UNION              = 0x0009, //
+  IMAGE_SYM_TYPE_ENUM               = 0x000A, // enumeration.
+  IMAGE_SYM_TYPE_MOE                = 0x000B, // member of enumeration.
+  IMAGE_SYM_TYPE_BYTE               = 0x000C, //
+  IMAGE_SYM_TYPE_WORD               = 0x000D, //
+  IMAGE_SYM_TYPE_UINT               = 0x000E, //
+  IMAGE_SYM_TYPE_DWORD              = 0x000F, //
+  IMAGE_SYM_TYPE_PCODE              = 0x8000, //
+
+  IMAGE_SYM_DTYPE_NULL              = 0,      // no derived type.
+  IMAGE_SYM_DTYPE_POINTER           = 1,      // pointer.
+  IMAGE_SYM_DTYPE_FUNCTION          = 2,      // function.
+  IMAGE_SYM_DTYPE_ARRAY             = 3       // array.
+} _SYMTYP;
+
+
+#pragma enumsize(1)
+typedef enum __SYMBOL_STORAGE_CLASSES // BYTE StorageClass;
+{
+  IMAGE_SYM_CLASS_END_OF_FUNCTION   = 0xFF, // -1
+  IMAGE_SYM_CLASS_NULL              = 0x00,
+  IMAGE_SYM_CLASS_AUTOMATIC         = 0x01,
+  IMAGE_SYM_CLASS_EXTERNAL          = 0x02,
+  IMAGE_SYM_CLASS_STATIC            = 0x03,
+  IMAGE_SYM_CLASS_REGISTER          = 0x04,
+  IMAGE_SYM_CLASS_EXTERNAL_DEF      = 0x05,
+  IMAGE_SYM_CLASS_LABEL             = 0x06,
+  IMAGE_SYM_CLASS_UNDEFINED_LABEL   = 0x07,
+  IMAGE_SYM_CLASS_MEMBER_OF_STRUCT  = 0x08,
+  IMAGE_SYM_CLASS_ARGUMENT          = 0x09,
+  IMAGE_SYM_CLASS_STRUCT_TAG        = 0x0A,
+  IMAGE_SYM_CLASS_MEMBER_OF_UNION   = 0x0B,
+  IMAGE_SYM_CLASS_UNION_TAG         = 0x0C,
+  IMAGE_SYM_CLASS_TYPE_DEFINITION   = 0x0D,
+  IMAGE_SYM_CLASS_UNDEFINED_STATIC  = 0x0E,
+  IMAGE_SYM_CLASS_ENUM_TAG          = 0x0F,
+  IMAGE_SYM_CLASS_MEMBER_OF_ENUM    = 0x10,
+  IMAGE_SYM_CLASS_REGISTER_PARAM    = 0x11,
+  IMAGE_SYM_CLASS_BIT_FIELD         = 0x12,
+
+  IMAGE_SYM_CLASS_FAR_EXTERNAL      = 0x44,
+
+  IMAGE_SYM_CLASS_BLOCK             = 0x64,
+  IMAGE_SYM_CLASS_FUNCTION          = 0x65,
+  IMAGE_SYM_CLASS_END_OF_STRUCT     = 0x66,
+  IMAGE_SYM_CLASS_FILE              = 0x67,
+// new
+  IMAGE_SYM_CLASS_SECTION           = 0x68,
+  IMAGE_SYM_CLASS_WEAK_EXTERNAL     = 0x69,
+
+  IMAGE_SYM_CLASS_CLR_TOKEN         = 0x6B
+} _SYMSTC;
+
+
+#pragma enumsize(4)
+enum __IMAGE_ORDINAL_FLAGS32
+{
+  IMAGE_ORDINAL_FLAG32  = 0x80000000
+};
+
+
+#pragma enumsize(8)
+enum __IMAGE_ORDINAL_FLAGS32
+{
+  IMAGE_ORDINAL_FLAG64  = 0x8000000000000000
+};
+
+
+
+
+/****************************************************************************
+ *                      WinNT.h structures adaptation                       *
+ ****************************************************************************/
+
+typedef struct _IMAGE_DOS_HEADER  // DOS .EXE header
+{
+  _DOSMAG e_magic;    // Magic number
+  WORD    e_cblp;     // Bytes on last page of file
+  WORD    e_cp;       // Pages in file
+  WORD    e_crlc;     // Relocations
+  WORD    e_cparhdr;  // Size of header in paragraphs
+  WORD    e_minalloc; // Minimum extra paragraphs needed
+  WORD    e_maxalloc; // Maximum extra paragraphs needed
+  WORD    e_ss;       // Initial (relative) SS value
+  WORD    e_sp;       // Initial SP value
+  WORD    e_csum;     // Checksum
+  WORD    e_ip;       // Initial IP value
+  WORD    e_cs;       // Initial (relative) CS value
+  WORD    e_lfarlc;   // File address of relocation table
+  WORD    e_ovno;     // Overlay number
+  WORD    e_res[4];   // Reserved words
+  WORD    e_oemid;    // OEM identifier (for e_oeminfo)
+  WORD    e_oeminfo;  // OEM information; e_oemid specific
+  WORD    e_res2[10]; // Reserved words
+  LONG    e_lfanew;   // File address of new exe header
+
+  __verify(e_magic == IMAGE_DOS_SIGNATURE); // only support DOS MZ files
+  __verify(__getDocSize() >= 0x40); // sizeof(IMAGE_DOS_HEADER)
+  __verify(e_lfanew < __getDocSize());
+  __verify((e_lfanew & 3) == 0);  // IMAGE_NT_HEADER should be 4-byte aligned
+} IMAGE_DOS_HEADER;
+
+
+typedef struct _IMAGE_FILE_HEADER
+{
+  _MACHINE Machine;
+  WORD     NumberOfSections;
+  time_t   TimeDateStamp;
+  DWORD    PointerToSymbolTable;
+  DWORD    NumberOfSymbols;
+  WORD     SizeOfOptionalHeader;
+  _CHARAC  Characteristics;
+
+  __verify((Machine == IMAGE_FILE_MACHINE_I386) ||  // only support x86 and x64
+           (Machine == IMAGE_FILE_MACHINE_AMD64));  // machine architectures
+} IMAGE_FILE_HEADER;
+
+
+typedef struct _IMAGE_DATA_DIRECTORY
+{
+  DWORD   VirtualAddress;
+  DWORD   Size;
+} IMAGE_DATA_DIRECTORY;
+
+
+typedef struct _IMAGE_OPTIONAL_HEADER32
+{
+  // Standard fields.
+  _OPTMAG   Magic;
+  UBYTE     MajorLinkerVersion;
+  UBYTE     MinorLinkerVersion;
+  DWORD     SizeOfCode;
+  DWORD     SizeOfInitializedData;
+  DWORD     SizeOfUninitializedData;
+  DWORD     AddressOfEntryPoint;
+  DWORD     BaseOfCode;
+  DWORD     BaseOfData;
+  // NT additional fields.
+  DWORD     ImageBase;
+  DWORD     SectionAlignment;
+  DWORD     FileAlignment;
+  WORD      MajorOperatingSystemVersion;
+  WORD      MinorOperatingSystemVersion;
+  WORD      MajorImageVersion;
+  WORD      MinorImageVersion;
+  WORD      MajorSubsystemVersion;
+  WORD      MinorSubsystemVersion;
+  DWORD     Win32VersionValue;
+  DWORD     SizeOfImage;
+  DWORD     SizeOfHeaders;
+  DWORD     CheckSum;
+  _SUBSYS   Subsystem;
+  _DLLCHA   DllCharacteristics;
+  DWORD     SizeOfStackReserve;
+  DWORD     SizeOfStackCommit;
+  DWORD     SizeOfHeapReserve;
+  DWORD     SizeOfHeapCommit;
+  DWORD     LoaderFlags;
+  DWORD     NumberOfRvaAndSizes;
+
+  __verify(Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC);
+
+// FileAlignment should be 512-bytes aligned or equal to SectionAlignment
+  __verify((((FileAlignment & 0x1FF) || FileAlignment) == SectionAlignment) ==
+              0);
+  __verify(FileAlignment > 0);
+  __verify(((SectionAlignment - 1) & SectionAlignment) == 0); // Should be even
+  __verify(((FileAlignment - 1) & FileAlignment) == 0); // Should be even
+  __verify(SectionAlignment >= FileAlignment);
+  __verify(SizeOfImage <= 0x77000000); // MM_SIZE_OF_LARGEST_IMAGE
+  __verify(((SectionAlignment - 1) & SizeOfImage) == 0); // Multiple of
+} IMAGE_OPTIONAL_HEADER32;
+
+
+typedef struct _IMAGE_OPTIONAL_HEADER64
+{
+  // Standard fields.
+  _OPTMAG   Magic;
+  UBYTE     MajorLinkerVersion;
+  UBYTE     MinorLinkerVersion;
+  DWORD     SizeOfCode;
+  DWORD     SizeOfInitializedData;
+  DWORD     SizeOfUninitializedData;
+  DWORD     AddressOfEntryPoint;
+  DWORD     BaseOfCode;
+  // NT additional fields.
+  ULONGLONG ImageBase;
+  DWORD     SectionAlignment;
+  DWORD     FileAlignment;
+  WORD      MajorOperatingSystemVersion;
+  WORD      MinorOperatingSystemVersion;
+  WORD      MajorImageVersion;
+  WORD      MinorImageVersion;
+  WORD      MajorSubsystemVersion;
+  WORD      MinorSubsystemVersion;
+  DWORD     Win32VersionValue;
+  DWORD     SizeOfImage;
+  DWORD     SizeOfHeaders;
+  DWORD     CheckSum;
+  _SUBSYS   Subsystem;
+  _DLLCHA   DllCharacteristics;
+  ULONGLONG SizeOfStackReserve;
+  ULONGLONG SizeOfStackCommit;
+  ULONGLONG SizeOfHeapReserve;
+  ULONGLONG SizeOfHeapCommit;
+  DWORD     LoaderFlags;
+  DWORD     NumberOfRvaAndSizes;
+
+  __verify(Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+
+// FileAlignment should be 512-bytes aligned or equal to SectionAlignment
+  __verify((((FileAlignment & 0x1FF) || FileAlignment) == SectionAlignment) ==
+              0);
+  __verify(FileAlignment > 0);
+  __verify(((SectionAlignment - 1) & SectionAlignment) == 0); // Should be even
+  __verify(((FileAlignment - 1) & FileAlignment) == 0); // Should be even
+  __verify(SectionAlignment >= FileAlignment);
+  __verify(SizeOfImage <= 0x77000000); // MM_SIZE_OF_LARGEST_IMAGE
+  __verify(((SectionAlignment - 1) & SizeOfImage) == 0); // Multiple of
+} IMAGE_OPTIONAL_HEADER64;
+
+
+typedef struct _IMAGE_NT_HEADERS64
+{
+  _PESIGN                 Signature;
+  IMAGE_FILE_HEADER       FileHeader;
+  IMAGE_OPTIONAL_HEADER64 OptionalHeader64;
+
+  __verify(Signature == IMAGE_NT_SIGNATURE);
+} IMAGE_NT_HEADERS64;
+
+
+typedef struct _IMAGE_NT_HEADERS32
+{
+  _PESIGN                 Signature;
+  IMAGE_FILE_HEADER       FileHeader;
+  IMAGE_OPTIONAL_HEADER32 OptionalHeader32;
+
+  __verify(Signature == IMAGE_NT_SIGNATURE);
+} IMAGE_NT_HEADERS32;
+
+
+typedef struct _IMAGE_SECTION_HEADER
+{
+  char    Name[IMAGE_SIZEOF_SHORT_NAME];
+  DWORD   VirtualSize;
+  DWORD   VirtualAddress;
+  DWORD   SizeOfRawData;
+  DWORD   PointerToRawData;
+  DWORD   PointerToRelocations;
+  DWORD   PointerToLinenumbers;
+  WORD    NumberOfRelocations;
+  WORD    NumberOfLinenumbers;
+  _SCNCHA Characteristics;
+
+  __verify(PointerToRawData < __getDocSize());
+} IMAGE_SECTION_HEADER;
+
+
+typedef struct _IMAGE_SYMBOL_SHORT_NAME
+{
+  char    Name[8];
+  DWORD   Value;
+  _SYMSCN SectionNumber;
+  _SYMTYP Type;
+  _SYMSTC StorageClass;
+  UBYTE   NumberOfAuxSymbols;
+
+  __verify(__getByteAt(__getAddrOf(__this__)) != 0x00); // Name[0] != '\0'
+} IMAGE_SYMBOL_SHORT_NAME;
+
+
+typedef struct _IMAGE_SYMBOL_LONG_NAME
+{
+  DWORD   Zeroes;
+  DWORD   NameOffset;
+  DWORD   Value;
+  _SYMSCN SectionNumber;
+  _SYMTYP Type;
+  _SYMSTC StorageClass;
+  UBYTE   NumberOfAuxSymbols;
+
+  __verify(Zeroes == 0);
+} IMAGE_SYMBOL_LONG_NAME;
+
+
+typedef struct _IMAGE_EXPORT_DIRECTORY
+{
+  DWORD   Characteristics;        // Export flags (reserved must be 0)
+  time_t  TimeDateStamp;
+  WORD    MajorVersion;
+  WORD    MinorVersion;
+  DWORD   Name;
+  DWORD   Base;
+  DWORD   NumberOfFunctions;
+  DWORD   NumberOfNames;
+  DWORD   AddressOfFunctions;     // RVA from base of image
+  DWORD   AddressOfNames;         // RVA from base of image
+  DWORD   AddressOfNameOrdinals;  // RVA from base of image
+} IMAGE_EXPORT_DIRECTORY;
+
+
+typedef struct _IMAGE_IMPORT_BY_NAME
+{
+  WORD    Hint;
+  zstring Name;
+} IMAGE_IMPORT_BY_NAME;
+
+
+typedef struct _IMAGE_THUNK_DATA64_BY_NAME
+{
+  ULONGLONG AddressOfData   : 31; // PIMAGE_IMPORT_BY_NAME
+  ULONGLONG _Zeroes         : 32;
+  ULONGLONG ForwarderString : 1;
+
+  __verify(ForwarderString == 0);
+  __verify(_Zeroes == 0);
+} IMAGE_THUNK_DATA64_BY_NAME;
+
+
+typedef struct _IMAGE_THUNK_DATA64_BY_ORDINAL
+{
+  ULONGLONG Ordinal         : 16;
+  ULONGLONG _Zeroes         : 47;
+  ULONGLONG Function        : 1;
+
+  __verify(Function == 1);
+  __verify(_Zeroes == 0); // Bug in v6.8 verify failed with 47 bits to 0
+} IMAGE_THUNK_DATA64_BY_ORDINAL;
+
+
+typedef struct _IMAGE_THUNK_DATA32_BY_NAME
+{
+  DWORD AddressOfData       : 31; // PIMAGE_IMPORT_BY_NAME
+  DWORD ForwarderString     : 1;
+
+ __verify(ForwarderString == 0);
+} IMAGE_THUNK_DATA32_BY_NAME;
+
+
+typedef struct _IMAGE_THUNK_DATA32_BY_ORDINAL
+{
+  DWORD Ordinal             : 16;
+  DWORD _Zeroes             : 15;
+  DWORD Function            : 1;
+
+  __verify(Function == 1);
+  __verify(_Zeroes == 0);
+} IMAGE_THUNK_DATA32_BY_ORDINAL;
+
+
+typedef struct _IMAGE_IMPORT_DESCRIPTOR
+{
+  DWORD OriginalFirstThunk;
+  DWORD TimeDateStamp;
+  DWORD ForwarderChain;
+  DWORD Name;
+  DWORD FirstThunk;
+} IMAGE_IMPORT_DESCRIPTOR;
+
+
+
+
+/****************************************************************************
+ *                       Additional public structures                       *
+ ****************************************************************************/
+
+typedef struct __COFF_STRING_TABLE
+{
+  DWORD Size; // Including size itself (minimum 4)
+//(Array of zstring)
+} _COFF_STRING_TABLE;
+
+
+typedef struct __DLL_NAME
+{
+  zstring DllName;
+} _DLL_NAME;
+
+
+typedef struct __NAME
+{
+  zstring Name;
+} _NAME;
+
+
+typedef struct __EXPORT_FUNCTION_RVA
+{
+  DWORD ExportRVA;
+} _EXPORT_FUNCTION_RVA;
+
+
+typedef struct __EXPORT_FUNCTION_FORWARDER_RVA
+{
+  DWORD ForwarderRVA;
+} _EXPORT_FUNCTION_FORWARDER_RVA;
+
+
+typedef struct __EXPORT_NAME_TABLE_ENTRY
+{
+  DWORD NameRVA;
+} _EXPORT_NAME_TABLE_ENTRY;
+
+
+typedef struct __EXPORT_ORDINAL_ENTRY
+{
+  WORD Ordinal;
+} _EXPORT_ORDINAL_ENTRY;
+
+
+typedef struct __ENTRY_POINT
+{
+  UBYTE EntryPoint;
+} _ENTRY_POINT;
+
+
+
+
+/****************************************************************************
+ *                             Public functions                             *
+ ****************************************************************************/
+
+enum __AUTOPARSEFILE_PRIVATE_MACROS
+{
+  __SIZEOF_IMAGE_DOS_HEADER         = 0x40,
+  __SIZEOF_IMAGE_NT_SIGNATURE       = 0x04,
+  __SIZEOF_IMAGE_FILE_HEADER        = 0x14,
+  __SIZEOF_IMAGE_SYMBOL             = 0x12,
+  __SIZEOF_IMAGE_OPTIONAL_HEADER32  = 0x60,
+  __SIZEOF_IMAGE_OPTIONAL_HEADER64  = 0x70,
+  __SIZEOF_IMAGE_NT_HEADERS32       = 0x78,
+  __SIZEOF_IMAGE_NT_HEADERS64       = 0x88,
+  __SIZEOF_IMAGE_DATA_DIRECTORY     = 0x08,
+  __SIZEOF_IMAGE_SECTION_HEADER     = 0x28,
+  __SIZEOF_EXPORT_FUNCTION_RVA      = 0x04,
+  __SIZEOF_EXPORT_NAME_TABLE_ENTRY  = 0x04,
+  __SIZEOF_EXPORT_ORDINAL_ENTRY     = 0x02,
+  __SIZEOF_IMAGE_IMPORT_DESCRIPTOR  = 0x14,
+  __SIZEOF_IMAGE_THUNK_DATA32       = 0x04,
+  __SIZEOF_IMAGE_THUNK_DATA64       = 0x08,
+
+  // IMAGE_DOS_HEADER
+  __E_LFANEW_OFFSET                 = 0x3C,
+
+  // IMAGE_FILE_HEADER
+  __NUMBEROFSECTIONS_OFFSET         = 0x02,
+  __POINTERTOSYMBOLTABLE_OFFSET     = 0x08,
+  __NUMBEROFSYMBOLS_OFFSET          = 0x0C,
+
+  // IMAGE_SYMBOL
+  __NAMEOFFSET_OFFSET               = 0x04,
+
+  // IMAGE_OPTIONAL_HEADER
+  __ADDRESSOFENTRYPOINT_OFFSET      = 0x10,
+
+  // IMAGE_OPTIONAL_HEADER32
+  __NUMBEROFRVAANDSIZES_32_OFFSET   = 0x5C,
+
+  // IMAGE_OPTIONAL_HEADER64
+  __NUMBEROFRVAANDSIZES_64_OFFSET   = 0x6C,
+
+  // IMAGE_SECTION_HEADER
+  __VIRTUALSIZE_OFFSET              = 0x08,
+  __VIRTUALADDRESS_OFFSET           = 0x0C,
+  __POINTERTORAWDATA_OFFSET         = 0x14,
+
+  // IMAGE_EXPORT_DIRECTORY
+  __EXPORT_NAME_OFFSET              = 0x0C,
+  __ORDINAL_BASE_OFFSET             = 0x10,
+  __NUMBEROFFUNCTIONS_OFFSET        = 0x14,
+  __NUMBEROFNAMES_OFFSET            = 0x18,
+  __ADDRESSOFFUNCTIONS_OFFSET       = 0x1C,
+  __ADDRESSOFNAMES_OFFSET           = 0x20,
+  __ADDRESSOFNAMEORDINALS_OFFSET    = 0x24,
+
+  // IMAGE_IMPORT_DESCRIPTOR
+  __DLL_NAME_OFFSET                 = 0x0C,
+  __IAT_OFFSET                      = 0x10
+};
+
+
+function AutoParseFile
+{
+  UQWord pos = 0;     // Current file position
+  UQWord nth = 0;     // IMAGE_NT_HEADERS
+  UQWord cofh = 0;    // IMAGE_FILE_HEADER
+  UQWord cofhm = 0;   // IMAGE_FILE_HEADER.Machine
+  UQWord nscn = 0;    // IMAGE_FILE_HEADER.NumberOfSections
+  UQWord nsym = 0;    // IMAGE_FILE_HEADER.NumberOfSymbols
+  UQWord symt = 0;    // First IMAGE_SYMBOL (COFF Symbol Table)
+  UQWord symte = 0;   // IMAGE_SYMBOL entry (in for loop)
+  UQWord cst = 0;     // COFF String Table
+  UQWord opth = 0;    // IMAGE_OPTIONAL_HEADER
+  UQWord nddir = 0;   // IMAGE_OPTIONAL_HEADER.NumberOfRvaAndSizes
+  UQWord entry = 0;   // IMAGE_OPTIONAL_HEADER.AddressOfEntryPoint
+  UQWord is32 = 0;    // Boolean (1 = PE32 format, 0 = PE32+ format)
+  UQWord ddir = 0;    // First IMAGE_DATA_DIRECTORY
+  UQWord scn = 0;     // First IMAGE_SECTION_HEADER
+  UQWord scnvs = 0;   // IMAGE_SECTION_HEADER.VirtualSize
+  UQWord scnva = 0;   // IMAGE_SECTION_HEADER.VirtualAddress
+  UQWord scnprd = 0;  // IMAGE_SECTION_HEADER.PointerToRawData
+  UQWord scnpos = 0;  // Current IMAGE_SECTION_HEADER position (in for loop)
+  UQWord ets = 0;     // Export Table Section
+  UQWord etsrva = 0;  // Export Table Section relative virtual address
+  UQWord edt = 0;     // IMAGE_EXPORT_DIRECTORY (Export Directory Table)
+  UQWord edtsiz = 0;  // Export Directory Table size (from Data Directory)
+  UQWord edtpos = 0;  // IMAGE_EXPORT_DIRECTORY position in file
+  UQWord edbase = 0;  // IMAGE_EXPORT_DIRECTORY.Base
+  UQWord ednof = 0;   // IMAGE_EXPORT_DIRECTORY.NumberOfFunctions;
+  UQWord ednon = 0;   // IMAGE_EXPORT_DIRECTORY.NumberOfNames;
+  UQWord edeat = 0;   // IMAGE_EXPORT_DIRECTORY.AddressOfFunctions
+  UQWord edeate = 0;  // Export Address Table entry
+  UQWord ednpt = 0;   // IMAGE_EXPORT_DIRECTORY.AddressOfNames
+  UQWord ednpte = 0;  // Export Name Pointer Table entry
+  UQWord edot = 0;    // IMAGE_EXPORT_DIRECTORY.AddressOfNameOrdinals
+  UQWord edote = 0;   // Export Ordinal Table entry
+  UQWord its = 0;     // Import Table Section
+  UQWord itsrva = 0;  // Import Table Section relative virtual address
+  UQWord idt = 0;     // First IMAGE_IMPORT_DESCRIPTOR (Import Directory Table)
+  UQWord iat = 0;     // First IMAGE_THUNK_DATA (Import Address Table)
+  UQWord docsize = __getDocSize();
+
+  if (docsize >= __SIZEOF_IMAGE_FILE_HEADER)
+  {
+    if ((__getUWordAt(pos) == IMAGE_DOS_SIGNATURE) &&
+        (docsize >= __SIZEOF_IMAGE_DOS_HEADER))
+    // File contains a MS-DOS 2.0 compatible EXE header (MZ format)
+    {
+      __addStructureAt(pos, "IMAGE_DOS_HEADER", "");
+      nth = __getDWordAt(__E_LFANEW_OFFSET);
+      if ((nth < docsize) && (__getUDWordAt(nth) == IMAGE_NT_SIGNATURE))
+      // File has a PE executable format
+      {
+        // Adding nt headers
+        cofh = nth + __SIZEOF_IMAGE_NT_SIGNATURE;
+        opth = nth + __SIZEOF_IMAGE_NT_SIGNATURE + __SIZEOF_IMAGE_FILE_HEADER;
+        entry = __getUDWordAt(opth + __ADDRESSOFENTRYPOINT_OFFSET);
+        if ((__getUWordAt(cofh) == IMAGE_FILE_MACHINE_I386) &&
+            (__getUWordAt(opth) == IMAGE_NT_OPTIONAL_HDR32_MAGIC))
+        // Executable file is PE32 format for x86 architecture
+        {
+          is32 = 1;
+          __addStructureAt(nth, "IMAGE_NT_HEADERS32", "");
+          ddir = nth + __SIZEOF_IMAGE_NT_HEADERS32;
+          nddir = __getUDWordAt(opth + __NUMBEROFRVAANDSIZES_32_OFFSET);
+        }
+        else if ((__getUWordAt(cofh) == IMAGE_FILE_MACHINE_AMD64) &&
+                (__getUWordAt(opth) == IMAGE_NT_OPTIONAL_HDR64_MAGIC))
+        // Executable file is PE32+ format for AMD architecture
+        {
+          is32 = 0;
+          __addStructureAt(nth, "IMAGE_NT_HEADERS64", "");
+          ddir = nth + __SIZEOF_IMAGE_NT_HEADERS64;
+          nddir = __getUDWordAt(opth + __NUMBEROFRVAANDSIZES_64_OFFSET);
+        };
+
+        // Adding data directories
+        if (nddir >= 1)
+        {
+          __addStructureAt(ddir, "IMAGE_DATA_DIRECTORY", "Export Table");
+          edt = __getUDWordAt(ddir);
+          edtsiz = __getUDWordAt(ddir + 4);
+        };
+        if (nddir >= 2)
+        {
+          __addStructureAt(ddir + 8, "IMAGE_DATA_DIRECTORY", "Import Table");
+          idt = __getUDWordAt(ddir + 8);
+        };
+        if (nddir >= 3) __addStructureAt(ddir + 16, "IMAGE_DATA_DIRECTORY",
+          "Resource Table");
+        if (nddir >= 4) __addStructureAt(ddir + 24, "IMAGE_DATA_DIRECTORY",
+          "Exception Table");
+        if (nddir >= 5) __addStructureAt(ddir + 32, "IMAGE_DATA_DIRECTORY",
+          "Certificate Table");
+        if (nddir >= 6) __addStructureAt(ddir + 40, "IMAGE_DATA_DIRECTORY",
+          "Base Relocation Table");
+        if (nddir >= 7) __addStructureAt(ddir + 48, "IMAGE_DATA_DIRECTORY",
+          "Debug");
+        if (nddir >= 8) __addStructureAt(ddir + 56, "IMAGE_DATA_DIRECTORY",
+          "Architecture");
+        if (nddir >= 9) __addStructureAt(ddir + 64, "IMAGE_DATA_DIRECTORY",
+          "Global Ptr");
+        if (nddir >= 10) __addStructureAt(ddir + 72, "IMAGE_DATA_DIRECTORY",
+          "TLS Table");
+        if (nddir >= 11) __addStructureAt(ddir + 80, "IMAGE_DATA_DIRECTORY",
+          "Load Config Table");
+        if (nddir >= 12) __addStructureAt(ddir + 88, "IMAGE_DATA_DIRECTORY",
+          "Bound Import");
+        if (nddir >= 13) __addStructureAt(ddir + 96, "IMAGE_DATA_DIRECTORY",
+          "IAT");
+        if (nddir >= 14) __addStructureAt(ddir + 104, "IMAGE_DATA_DIRECTORY",
+          "Delay Import Descriptor");
+        if (nddir >= 15) __addStructureAt(ddir + 112, "IMAGE_DATA_DIRECTORY",
+          "CLR Runtime Header");
+        if (nddir >= 16) __addStructureAt(ddir + 120, "IMAGE_DATA_DIRECTORY",
+          "Reserved");
+
+        // Adding section table
+        scn = ddir + (nddir * __SIZEOF_IMAGE_DATA_DIRECTORY);
+        nscn = __getUWordAt(cofh + __NUMBEROFSECTIONS_OFFSET);
+        for (UQWord i = 0; i < nscn; i++)
+        {
+          scnpos = scn + (i * __SIZEOF_IMAGE_SECTION_HEADER);
+          __addStructureAt(scnpos, "IMAGE_SECTION_HEADER", "");
+          scnvs = __getUDWordAt(scnpos + __VIRTUALSIZE_OFFSET);
+          scnva = __getUDWordAt(scnpos + __VIRTUALADDRESS_OFFSET);
+          scnprd = __getUDWordAt(scnpos + __POINTERTORAWDATA_OFFSET);
+
+          if (entry >= scnva && entry < (scnva + scnvs))
+          // Address of entry point found in this section
+          {
+            __addStructureAt(scnprd + (entry - scnva), "_ENTRY_POINT", "");
+          };
+          if (edt >= scnva && edt < (scnva + scnvs))
+          // Export table found in this section
+          {
+            ets = scnprd;
+            etsrva = scnva;
+            edtpos = scnprd + (edt - scnva);
+          };
+          if (idt >= scnva && idt < (scnva + scnvs))
+          // Import table found in this section
+          {
+            its = scnprd;
+            itsrva = scnva;
+            idt = its + (idt - itsrva);
+          };
+        };
+
+        // Adding export table
+        if (edt > 0)
+        {
+          __addStructureAt(edtpos, "IMAGE_EXPORT_DIRECTORY", "");
+          edbase = __getUDWordAt(edtpos + __ORDINAL_BASE_OFFSET);
+          edeat = __getUDWordAt(edtpos + __ADDRESSOFFUNCTIONS_OFFSET);
+          ednpt = __getUDWordAt(edtpos + __ADDRESSOFNAMES_OFFSET);
+          edot = __getUDWordAt(edtpos + __ADDRESSOFNAMEORDINALS_OFFSET);
+
+          // Adding export dll name
+          __addStructureAt(ets + (__getUDWordAt(edtpos + __EXPORT_NAME_OFFSET)-
+                           etsrva), "_DLL_NAME", "");
+
+          // Adding export address table
+          for (UQWord j = 0;
+               j < __getUDWordAt(edtpos + __NUMBEROFFUNCTIONS_OFFSET);
+               j++)
+          {
+            edeate = ets + (edeat - etsrva) +
+                     (j * __SIZEOF_EXPORT_FUNCTION_RVA);
+            if (__getUDWordAt(edeate) < edt ||
+                __getUDWordAt(edeate) > edt + edtsiz)
+            {
+              __addStructureAt(edeate, "_EXPORT_FUNCTION_RVA", "");
+            }
+            else
+            {
+              __addStructureAt(edeate, "_EXPORT_FUNCTION_FORWARDER_RVA", "");
+              __addStructureAt(ets + (__getUDWordAt(edeate) - etsrva),
+                               "_NAME", "");
+            };
+          };
+
+          // Adding export name pointer table
+          for (UQWord k = 0;
+               k < __getUDWordAt(edtpos + __NUMBEROFNAMES_OFFSET);
+               k++)
+          {
+            ednpte = ets + (ednpt - etsrva) +
+                     (k * __SIZEOF_EXPORT_FUNCTION_RVA);
+            __addStructureAt(ednpte, "_EXPORT_NAME_TABLE_ENTRY", "");
+            __addStructureAt(ets + (__getUDWordAt(ednpte) - etsrva),
+                             "_NAME", "");
+
+            // Adding export ordinal table
+            edote = ets + (edot - etsrva) +
+                     (k * __SIZEOF_EXPORT_ORDINAL_ENTRY);
+            __addStructureAt(edote, "_EXPORT_ORDINAL_ENTRY", "");
+          };
+        };
+
+        // Adding import table
+        if (idt > 0)
+        {
+          while ((__getUQWordAt(idt) == 0 &&  // Last null-idt test
+                  __getUQWordAt(idt + 8) == 0 &&
+                  __getUDWordAt(idt + 16) == 0) == 0)
+          {
+            __addStructureAt(idt, "IMAGE_IMPORT_DESCRIPTOR", "");
+
+            // Adding import dll name
+            __addStructureAt(its + (__getUDWordAt(idt + __DLL_NAME_OFFSET) -
+                             itsrva), "_DLL_NAME", "");
+
+            // Adding import address table
+            iat = its + (__getUDWordAt(idt + __IAT_OFFSET) - itsrva);
+            if (is32 == 1)
+            {
+              while ((__getUDWordAt(iat) == 0) == 0) // Last null-iat test
+              {
+                if ((__getUDWordAt(iat) & IMAGE_ORDINAL_FLAG32) == 0)
+                {
+                  __addStructureAt(iat, "IMAGE_THUNK_DATA32_BY_NAME", "");
+                  __addStructureAt(its + (__getUDWordAt(iat) - itsrva),
+                                  "IMAGE_IMPORT_BY_NAME", "");
+                }
+                else
+                  __addStructureAt(iat, "IMAGE_THUNK_DATA32_BY_ORDINAL", "");
+                iat += __SIZEOF_IMAGE_THUNK_DATA32;
+              };
+            }
+            else if (is32 == 0)
+            {
+              while ((__getUQWordAt(iat) == 0) == 0) // Last null-iat test
+              {
+                if ((__getUQWordAt(iat) & IMAGE_ORDINAL_FLAG64) == 0)
+                {
+                  __addStructureAt(iat, "IMAGE_THUNK_DATA64_BY_NAME", "");
+                  __addStructureAt(its + (__getUDWordAt(iat) - itsrva),
+                                  "IMAGE_IMPORT_BY_NAME", "");
+                }
+                else
+                  __addStructureAt(iat, "IMAGE_THUNK_DATA64_BY_ORDINAL", "");
+                iat += __SIZEOF_IMAGE_THUNK_DATA64;
+              };
+            };
+            idt += __SIZEOF_IMAGE_IMPORT_DESCRIPTOR;
+          };
+        };
+      };
+    }
+    else
+    // Not an exeutable file
+    {
+      cofhm = __getUWordAt(pos);
+      if (cofhm == IMAGE_FILE_MACHINE_I386 ||
+          cofhm == IMAGE_FILE_MACHINE_AMD64)
+      // File has a COFF object module format (for x86 or AMD64 architecture)
+      {
+        // Adding coff header
+        cofh = pos;
+        __addStructureAt(cofh, "IMAGE_FILE_HEADER", "");
+
+        // Adding section table
+        scn = cofh + __SIZEOF_IMAGE_FILE_HEADER;
+        nscn = __getUWordAt(cofh + __NUMBEROFSECTIONS_OFFSET);
+        for (UQWord l = 0; l < nscn; l++)
+        {
+          scnpos = scn + (l * __SIZEOF_IMAGE_SECTION_HEADER);
+          __addStructureAt(scnpos, "IMAGE_SECTION_HEADER", "");
+          scnvs = __getUDWordAt(scnpos + __VIRTUALSIZE_OFFSET);
+          scnva = __getUDWordAt(scnpos + __VIRTUALADDRESS_OFFSET);
+          scnprd = __getUDWordAt(scnpos + __POINTERTORAWDATA_OFFSET);
+        };
+
+        // Adding coff symbol table
+        symt = __getUDWordAt(cofh + __POINTERTOSYMBOLTABLE_OFFSET);
+        nsym = __getUDWordAt(cofh + __NUMBEROFSYMBOLS_OFFSET);
+        cst = symt + (nsym * __SIZEOF_IMAGE_SYMBOL);
+        if (symt < docsize)
+        {
+          for (UQWord m = 0; m < nsym; m++)
+          {
+            symte = symt + (m * __SIZEOF_IMAGE_SYMBOL);
+            if (__getUDWordAt(symte) == 0)
+            {
+              __addStructureAt(symte, "IMAGE_SYMBOL_LONG_NAME", "");
+              __addStructureAt(cst + __getUDWordAt(symte+__NAMEOFFSET_OFFSET),
+                               "_NAME", "");
+            }
+            else
+              __addStructureAt(symte, "IMAGE_SYMBOL_SHORT_NAME", "");
+          };
+        };
+      };
+    };
+  };
+}
